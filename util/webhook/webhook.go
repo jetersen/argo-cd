@@ -70,10 +70,11 @@ func NewHandler(namespace string, appClientset appclientset.Interface, set *sett
 
 // affectedRevisionInfo examines a payload from a webhook event, and extracts the repo web URL,
 // the revision, and whether or not this affected origin/HEAD (the default branch of the repository)
-func affectedRevisionInfo(payloadIf interface{}) ([]string, string, bool) {
+func affectedRevisionInfo(payloadIf interface{}) ([]string, string, bool, []string) {
 	var webURLs []string
 	var revision string
 	var touchedHead bool
+	var paths []string
 
 	parseRef := func(ref string) string {
 		refParts := strings.SplitN(ref, "/", 3)
@@ -86,17 +87,20 @@ func affectedRevisionInfo(payloadIf interface{}) ([]string, string, bool) {
 		webURLs = append(webURLs, payload.Repository.HTMLURL)
 		revision = parseRef(payload.Ref)
 		touchedHead = bool(payload.Repository.DefaultBranch == revision)
+		paths = append(paths, "")
 	case gitlab.PushEventPayload:
 		// See: https://docs.gitlab.com/ee/user/project/integrations/webhooks.html
 		webURLs = append(webURLs, payload.Project.WebURL)
 		revision = parseRef(payload.Ref)
 		touchedHead = bool(payload.Project.DefaultBranch == revision)
+		paths = append(paths, "")
 	case gitlab.TagEventPayload:
 		// See: https://docs.gitlab.com/ee/user/project/integrations/webhooks.html
 		// NOTE: this is untested
 		webURLs = append(webURLs, payload.Project.WebURL)
 		revision = parseRef(payload.Ref)
 		touchedHead = bool(payload.Project.DefaultBranch == revision)
+		paths = append(paths, "")
 	case bitbucket.RepoPushPayload:
 		// See: https://confluence.atlassian.com/bitbucket/event-payloads-740262817.html#EventPayloads-Push
 		// NOTE: this is untested
@@ -110,6 +114,10 @@ func affectedRevisionInfo(payloadIf interface{}) ([]string, string, bool) {
 		// Not actually sure how to check if the incoming change affected HEAD just by examining the
 		// payload alone. To be safe, we just return true and let the controller check for himself.
 		touchedHead = true
+
+		// Payload does not provide a way to get modified paths
+		paths = nil
+
 	case bitbucketserver.RepositoryReferenceChangedPayload:
 
 		// Webhook module does not parse the inner links
@@ -133,17 +141,21 @@ func affectedRevisionInfo(payloadIf interface{}) ([]string, string, bool) {
 		// payload alone. To be safe, we just return true and let the controller check for himself.
 		touchedHead = true
 
+		// Payload does not provide a way to get modified paths
+		paths = nil
+
 	case gogsclient.PushPayload:
 		webURLs = append(webURLs, payload.Repo.HTMLURL)
 		revision = parseRef(payload.Ref)
 		touchedHead = bool(payload.Repo.DefaultBranch == revision)
+		paths = append(paths, "")
 	}
-	return webURLs, revision, touchedHead
+	return webURLs, revision, touchedHead, paths
 }
 
 // HandleEvent handles webhook events for repo push events
 func (a *ArgoCDWebhookHandler) HandleEvent(payload interface{}) {
-	webURLs, revision, touchedHead := affectedRevisionInfo(payload)
+	webURLs, revision, touchedHead, paths := affectedRevisionInfo(payload)
 	// NOTE: the webURL does not include the .git extension
 	if len(webURLs) == 0 {
 		log.Info("Ignoring webhook event")
@@ -184,6 +196,10 @@ func (a *ArgoCDWebhookHandler) HandleEvent(payload interface{}) {
 				}
 			} else if targetRev != revision {
 				continue
+			}
+			targetPath := app.Spec.Source.Path
+			if targetPath != "" && len(paths) != 0 {
+
 			}
 			_, err = argo.RefreshApp(appIf, app.ObjectMeta.Name, v1alpha1.RefreshTypeNormal)
 			if err != nil {
